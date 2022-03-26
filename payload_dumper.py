@@ -33,11 +33,56 @@ def verify_contiguous(exts):
 
     return True
 
-def data_for_op(op,out_file,old_file):
-    args.payloadfile.seek(data_offset + op.data_offset)
-    data = args.payloadfile.read(op.data_length)
+def data_for_op(op, out_file, old_file):
+    global chunk_count
+    global last_chunk_count
+    global data_last_chunk
+    global data_last_offset
+    global payloadfile_chunk
+
+    # sys.stdout.write("offset: %s, length: %s vs (%d), outfile: \n" % (str(data_offset + op.data_offset), str(op.data_length), 4 * 1024 * 1024 * 1024))
+    offset = data_offset + op.data_offset
+
+    if chunk_count > last_chunk_count:
+        sys.stdout.write("XX: hit %d\n" % (offset))
+        last_chunk_count += 1
+
+        chunk = ""
+
+        # drop first chunk
+        if chunk_count == 1:
+            chunk = payloadfile_dup.read(chunk_size)
+
+        chunk = payloadfile_dup.read(chunk_size)
+        payloadfile_chunk = open("/tmp/chunk.%d" % chunk_count, 'wb')
+        payloadfile_chunk.write(chunk)
+        payloadfile_chunk.close()
+
+        payloadfile_chunk = open("/tmp/chunk.%d" % chunk_count, 'rb')
+        payloadfile_chunk.seek(offset)
+        data = data_last_chunk + payloadfile_chunk.read(op.data_length -
+                                                        (chunk_size - data_last_offset))
+
+        data_last_chunk = ""
+        data_last_offset = 0
+    elif chunk_count > 0:
+        payloadfile_chunk.seek(offset)
+        data = payloadfile_chunk.read(op.data_length)
+
+    else:
+        args.payloadfile.seek(offset)
+        data = args.payloadfile.read(op.data_length)
+
+    if offset < chunk_size and offset + op.data_length > chunk_size:
+        data_last_chunk = data
+        data_last_offset = offset
+        chunk_count += 1
+        return
 
     # assert hashlib.sha256(data).digest() == op.data_sha256_hash, 'operation data hash mismatch'
+
+    # sys.stdout.write("XX: data_offset: %d, data_length: %d\n" % (offset, op.data_length))
+    # sys.stdout.flush()
 
     if op.type == op.REPLACE_XZ:
         dec = lzma.LZMADecompressor()
@@ -93,12 +138,26 @@ def data_for_op(op,out_file,old_file):
 
     return data
 
+
 def dump_part(part):
+    # global chunk_count
+    # global last_chunk_count
+    # global data_last_chunk
+    # global data_last_offset
+    # global payloadfile_chunk
+
     sys.stdout.write("Processing %s partition" % part.partition_name)
     sys.stdout.flush()
 
+    # # XX: for debug
+    # if part.partition_name != 'my_heytap':
+    #     sys.stdout.write("\nSkip %s partition\n" % part.partition_name)
+    #     sys.stdout.flush()
+    #     return
+
     out_file = open('%s/%s.img' % (args.out, part.partition_name), 'wb')
     h = hashlib.sha256()
+    # sys.stdout.write("XX: outfile_name: %s/%s.img\n" % (args.out, part.partition_name))
 
     if args.diff:
         old_file = open('%s/%s.img' % (args.old, part.partition_name), 'rb')
@@ -109,6 +168,12 @@ def dump_part(part):
         data = data_for_op(op,out_file,old_file)
         sys.stdout.write(".")
         sys.stdout.flush()
+
+    # last_chunk_count = 0
+    # chunk_count = 0
+    # data_last_chunk = ""
+    # data_last_offset = 0
+    # payloadfile_chunk = None
 
     print("Done")
 
@@ -130,6 +195,7 @@ args = parser.parse_args()
 if not os.path.exists(args.out):
     os.makedirs(args.out)
 
+payloadfile_dup = args.payloadfile
 magic = args.payloadfile.read(4)
 assert magic == b'CrAU'
 
@@ -147,6 +213,12 @@ manifest = args.payloadfile.read(manifest_size)
 metadata_signature = args.payloadfile.read(metadata_signature_size)
 
 data_offset = args.payloadfile.tell()
+data_last_chunk = ""
+data_last_offset = 0
+chunk_size = 4 * 1024 * 1024 * 1024  # 1G
+chunk_count = 0
+last_chunk_count = 0
+payloadfile_chunk = None
 
 dam = um.DeltaArchiveManifest()
 dam.ParseFromString(manifest)
